@@ -3,14 +3,15 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
 #include <pthread.h>
 
-#define PORT 5000
 #define SIZE 256
 #define BACKLOG 2
+//127.0.0.1
 
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -22,27 +23,37 @@ struct Client {
 
 typedef enum {true, false} bool;
 
-int clientCount = 0;
-int clientNumber = 0;
+int clientCount = 0;    // number of clients online
+int clientNumber = 0;   // last client id
 
 void* clientThread(void* args);
 int recvAll(int socket, char* str);
 void* clientConnections(void* args);
-void* checkSocket(int exp, char* msg);
+void* checkSocket(int* exp, char* msg);
 void* checkThread(int thread, char* msg);
-void* clientThread(void* args);
 void kickClient(int id);
-void kickAllClients();
+void kickAll();
 void showClients();
 void findAndKick();
-void createServer(int serverSocket);
+void createServer(int* serverSocket, int port, char* ip);
 
 int main(int argc, char** argv) {
     
-    int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-    createServer(serverSocket);
+    // check the number of entered arguments
+    if (argc != 3) {
+        fprintf(stderr, "Invalid cmd format. \nFormat: ./server [PORT] [IP]\n");
+        exit(1);
+    }
     
+    int serverSocket = -1;
+    int port = (*(int*) argv[1]);
+    char* ip = argv[2];
+    
+    createServer(&serverSocket, port, ip);
+    
+    // create a thread where clients will be accepted
     pthread_t listeningThread;
+    //listening thread function - clientConnections
     int status = pthread_create(&listeningThread, NULL, clientConnections, &serverSocket);
     checkThread(status, (char*) "\nCan't create thread because of error: %s\n");
     
@@ -53,6 +64,7 @@ int main(int argc, char** argv) {
         fgets(cmd, SIZE, stdin);
         cmd[strlen(cmd) - 1] = '\0';
         
+        // breaks the string into tokens by the specified delimiter and returns a pointer to the first token found
         found = strtok(cmd, " ");
     
         if (found == NULL) {
@@ -69,7 +81,7 @@ int main(int argc, char** argv) {
                 printf("\nThere is no one clients on the server.\n\n");
                 continue;
             }
-            kickAllClients();
+            kickAll();
         }
         
         else if (strcmp("--show-clients", found) == 0) {
@@ -89,7 +101,8 @@ int main(int argc, char** argv) {
                 
                 found = strtok(NULL, " ");
                 
-                char *foundCheck = found; //check next
+                // if something else comes after the "--kikck [NUM]", the format is incorrect
+                char *foundCheck = found;
                 foundCheck = strtok(NULL, " ");
                 
                 if (foundCheck != NULL) {
@@ -107,14 +120,15 @@ int main(int argc, char** argv) {
         }
         
     }
-    
-    //pthread_join(listeningThread, NULL);
-    
-    shutdown(serverSocket, BACKLOG);
+        
+    shutdown(serverSocket, SHUT_RDWR);
     printf("\nServer: socket was shut down.\n");
 
     close(serverSocket);
     printf("\nServer: socket was closed.\n");
+    
+    //waiting for the end of the listening thread
+    pthread_join(listeningThread, NULL);
     
     return 0;
     
@@ -126,20 +140,28 @@ void* clientConnections(void* args) {
     while(1) {
         clientSocket = accept(serverSocket, NULL, NULL);
         
-        //pthread_mutex_lock(&mutex);
+        //if the server has completed its work
+        if (clientSocket <= 0) {
+            kickAll();
+            break;
+        }
         
+        pthread_mutex_lock(&mutex);
+        
+        //create a client with its number, socket and thread
         int clientId = clientNumber;
         clients = (struct Client*) realloc(clients, sizeof(struct Client) * (clientNumber + 1));
         clients[clientId].id = clientId;
         clients[clientId].socket = clientSocket;
-
+        
+        //client thread function - clientThread
         int status = pthread_create(&(clients[clientId].clientThread), NULL, clientThread, (void*) &clientId);
         checkThread(status, (char*) "\nCan't create thread because of error: %s\n");
         
         clientCount++;
         clientNumber++;
         
-        //pthread_mutex_unlock(&mutex);
+        pthread_mutex_unlock(&mutex);
         
     }
     
@@ -149,14 +171,15 @@ void* clientThread(void* args) {
     int clientId = *((int*)args);
     printf("\nServer: Client %d here.\n", clientId);
     
-    //pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&mutex);
     int clientSocket = clients[clientId].socket;
-    //pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&mutex);
 
     char msg[SIZE] = {0};
     
     while(1) {
-        if (recvAll(clientSocket, msg) <= 0 || clientCount > BACKLOG) {
+        int recieve = recvAll(clientSocket, msg);
+        if (recieve <= 0 || clientCount > BACKLOG) {
             kickClient(clientId);
             break;
         }
@@ -166,25 +189,25 @@ void* clientThread(void* args) {
     }
 }
 
-int recvAll(int socket, char* str) {
-    int result = 0;
-    int recved = 0;
-    int size = SIZE;
-    while(size > 0) {
-        recved = recv(socket, str + recved, size, 0);
-        if (recved <= 0) {
+int recvAll(int socket, char *msg) {
+    int total_size = 0;
+    int size_recv = 0;
+    int full_size = SIZE;
+    while(full_size > 0) {
+        size_recv = recv(socket, msg + size_recv, full_size, 0);
+        if (size_recv <= 0) {
             return -1;
         }
-        result += recved;
-        size -= result;
+        total_size += size_recv;
+        full_size -= total_size;
     }
-    return result;
+    return total_size;
 }
 
-void kickAllClients() {
-    //pthread_mutex_lock(&mutex);
+void kickAll() {
+    pthread_mutex_lock(&mutex);
     int count = clientNumber;
-    //pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&mutex);
     for (int i = 0; i < count; i++) {
         kickClient(i);
     }
@@ -193,10 +216,15 @@ void kickAllClients() {
 
 void kickClient(int id) {
     if (clients[id].socket != -1) {
+        pthread_mutex_lock(&mutex);
+        
         shutdown(clients[id].socket, SHUT_RDWR);
         close(clients[id].socket);
-        
         clients[id].socket = -1;
+        
+        pthread_mutex_unlock(&mutex);
+        
+        //waiting for the end of the client thread
         pthread_join(clients[id].clientThread, NULL);
         
         clientCount--;
@@ -205,9 +233,9 @@ void kickClient(int id) {
 }
 
 void showClients() {
-    //pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&mutex);
     int count = clientNumber;
-    //pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&mutex);
     int number = 1;
     for (int i = 0; i < count; i++) {
         if (clients[i].socket != -1) {
@@ -218,13 +246,13 @@ void showClients() {
 }
 
 void findAndKick(char* number) {
-    //pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&mutex);
     int count = clientNumber;
-    //pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&mutex);
     int clientId = atoi(number);
     for (int i = 0; i < count; i++) {
-        bool realClient = (clients[i].id == clientId);
-        bool realSocket = (clients[i].socket != -1);
+        bool realClient = (clients[i].id == clientId); //there is a client with this number
+        bool realSocket = (clients[i].socket != -1); //client socket is alive
         if (realClient && realSocket) {
             kickClient(clientId);
             break;
@@ -235,7 +263,7 @@ void findAndKick(char* number) {
     }
 }
 
-void* checkSocket(int exp, char* msg) {
+void* checkSocket(int* exp, char* msg) {
     if (exp < 0) {
         printf(msg, strerror(errno));
         exit(1);
@@ -249,29 +277,30 @@ void* checkThread(int thread, char* msg) {
     }
 }
 
-void createServer(int serverSocket) {
+void createServer(int* serverSocket, int port, char* ip) {
+    *serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     checkSocket(serverSocket, (char*) "\nCan't create socket because of error: %s\n");
     
     printf("\nServer: socket was created.\n");
     
     struct sockaddr_in serverAddress;
     serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(PORT);
-    serverAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+    serverAddress.sin_port = htons(port);
+    serverAddress.sin_addr.s_addr = inet_addr(ip);
     
     //TIME_WAIT binding
     int opt = 1;
-    if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
+    if (setsockopt(*((int*)serverSocket), SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
          printf("\nCan't rebind socket because of error: %s\n", strerror(errno));
          exit(1);
     }
     
-    int binding = bind(serverSocket, (struct sockaddr*) &serverAddress, sizeof(serverAddress));
-    checkSocket(binding, (char*) "\nCan't bind socket because of error: %s\n");
+    int binding = bind(*((int*)serverSocket), (struct sockaddr*) &serverAddress, sizeof(serverAddress));
+    checkSocket(&binding, (char*) "\nCan't bind socket because of error: %s\n");
 
     printf("\nServer: socket was binded.\n");
 
-    if (listen(serverSocket, BACKLOG)) {
+    if (listen(*((int*)serverSocket), BACKLOG)) {
         printf("\nCan't  do listening because of: %s\n", strerror(errno));
         exit(1);
     }

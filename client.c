@@ -3,27 +3,30 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
-#include <pthread.h>
 
-#define PORT 5000
 #define SIZE 256
 
-void createClient(int clientSocket);
-int recvAll(int socket, char* str);
-void closeClient();
-pthread_mutex_t mutex;
-int smth = 0;
+void createClient(int* clientSocket, int port, char* ip);
+int recvAll(int socket, char* msg);
 
 int main(int argc, char** argv) {
     
-    int clientSocket = socket(AF_INET, SOCK_STREAM, 0);
-    createClient(clientSocket);
+    // check the number of entered arguments
+    if (argc != 3) {
+        fprintf(stderr, "Invalid cmd format. \nFormat: ./client [PORT] [IP]\n");
+        exit(1);
+    }
     
-    pthread_mutex_init(&mutex, NULL);
-        
+    int clientSocket = -1;
+    int port = (*(int*) argv[1]);
+    char* ip = argv[2];
+    
+    createClient(&clientSocket, port, ip);
+            
     char msg[SIZE] = {0};
     
     while(1) {
@@ -49,41 +52,36 @@ int main(int argc, char** argv) {
          }
 
     }
-    
-    closeClient(clientSocket);
-
-    return 0;
-
-    
-}
-
-void closeClient(int clientSocket) {
-    
+        
     shutdown(clientSocket, SHUT_RDWR);
     printf("\nClient: socket was shut down.\n");
 
     close(clientSocket);
     printf("\nClient: socket was closed.\n");
 
+    return 0;
+
 }
 
-int recvAll(int socket, char* str) {
-    int result = 0;
-    int recved = 0;
-    int size = SIZE;
-    while(size > 0) {
-        recved = recv(socket, str + recved, size, 0);
-        if (recved <= 0) {
+int recvAll(int socket, char *msg) {
+    int total_size = 0;
+    int size_recv = 0;
+    int full_size = SIZE;
+    while(full_size > 0) {
+        size_recv = recv(socket, msg + size_recv, full_size, 0);
+        if (size_recv <= 0) {
             return -1;
         }
-        result += recved;
-        size -= result;
+        total_size += size_recv;
+        full_size -= total_size;
     }
-    return result;
+    return total_size;
 }
 
-void createClient(int clientSocket) {
-    if (clientSocket < 0) {
+void createClient(int* clientSocket, int port, char* ip) {
+    *clientSocket = socket(AF_INET, SOCK_STREAM, 0);
+    
+    if (*((int*)clientSocket) < 0) {
         printf("\nCan't create socket because of error: %s\n", strerror(errno));
         exit(1);
     }
@@ -91,10 +89,10 @@ void createClient(int clientSocket) {
     
     struct sockaddr_in serverAddress;
     serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(PORT);
-    serverAddress.sin_addr.s_addr = htonl(INADDR_ANY);
+    serverAddress.sin_port = htons(port);
+    serverAddress.sin_addr.s_addr = inet_addr(ip);
     
-    int connectionStatus = connect(clientSocket, (struct sockaddr *) &serverAddress, sizeof(serverAddress));
+    int connectionStatus = connect(*((int*)clientSocket), (struct sockaddr *) &serverAddress, sizeof(serverAddress));
     
     if (connectionStatus == -1) {
         printf("\nCan't making connection to the socket because of error: %s\n", strerror(errno));
